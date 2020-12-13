@@ -163,16 +163,185 @@ feature은 mfcc를 통해서 추출한 데이터,label은 정답 값, predict는
 ## 결과
 
 Finish training of the GMM_HMM models for digits 0-9
+
 Test on true label  1 : predict result label is  1
+
 Test on true label  10 : predict result label is  9
+
 Test on true label  2 : predict result label is  2
+
 Test on true label  3 : predict result label is  3
+
 Test on true label  4 : predict result label is  4
+
 Test on true label  5 : predict result label is  5
+
 Test on true label  6 : predict result label is  6
+
 Test on true label  7 : predict result label is  7
+
 Test on true label  8 : predict result label is  6
+
 Test on true label  9 : predict result label is  6
+
 Final recognition rate is 70.00 %
 
 위의 결과가 나왔고 transmatPrior의 초기값을 다양하게 주어봤지만 10, 8, 9는 계속 예측에 실패하고 있다.
+
+# demo_0_9.py
+
+위의 코드는 한국어 데이터셋이 아닌 중국어 데이터이다. 그리고 sampling rate또한 한국어는 16000이고 중국어는 8000이다. 그래서 한국어 데이터 셋으로 경우에는 transmat_이 합이 1이 아닌 다른 값이 나오게 되서 model의 학습이 되지 않고 model.score를 통해서 예측을 실행하면 에러코드가 출력된다.
+
+이 원인은 https://github.com/hmmlearn/hmmlearn/issues/110에 나와 있는데 0*log0이 곱해지면서 transmat_ prob이 이상한 값이 나오게 학습된다고 되어있다.
+
+그리고 원인중 하나는 기존 model에는 5개의 state가 존재하는데 5개의 state중 미방문 state가 생기기 때문이었다.
+
+그래서 state수를 줄임으로서 값을 얻어낼 수 있었다.
+
+## Code(only modifed)
+
+### 1. train_GMMHMM
+
+```python
+def train_GMMHMM(dataset):
+    GMMHMM_Models = {}
+    states_num = 3
+    GMM_mix_num = 3
+    tmp_p = 1.0/(states_num-1)
+    transmatPrior = np.array([[tmp_p, tmp_p, 0], \
+                               [0, 0.5, 0.5], \
+                               [0, 0, 1]],dtype=np.float)
+
+
+    startprobPrior = np.array([0.5, 0.5, 0],dtype=np.float)
+    for label in dataset.keys():
+        model = hmm.GMMHMM(n_components=states_num, n_mix=GMM_mix_num, \
+                           transmat_prior=transmatPrior, startprob_prior=startprobPrior, \
+                           covariance_type='diag', n_iter=100)
+        trainData = dataset[label]
+        length = np.zeros([len(trainData), ], dtype=np.int)
+        for m in range(len(trainData)):
+            length[m] = trainData[m].shape[1]
+        trainData = np.vstack(trainData)
+        model.fit(trainData, lengths=length)  # get optimal parameters
+        GMMHMM_Models[label] = model
+    return GMMHMM_Models
+```
+
+기존의 코드와 같지만 state_num을 줄임에 따라서 5\*5였던 transmatPrior을 3\*3으로 줄이면서 기본 확률값도 조정을 했다. startprobPrior또한 3으로 바꾸었다. 그리고 미방문 state 가능성을 없애기 위해서 iteration을 기존보다 10배 높여주었다.
+
+### 2. buildDataSet
+
+```python
+def buildDataSet(dir, train):
+    # Filter out the wav audio files under the dir
+    fileList = [f for f in os.listdir(dir) if os.path.splitext(f)[1] == '.wav']
+    dataset = {}
+    for fileName in fileList:
+        label = fileName[0]
+        if(train == 0):
+            if fileName[2] == 'b':
+                continue
+        else:
+            if fileName[2] == 'a':
+                continue
+        feature = extract_mfcc(dir+fileName)
+        feature = np.transpose(feature)
+        if label not in dataset.keys():
+            dataset[label] = []
+            dataset[label].append(feature)
+        else:
+            exist_feature = dataset[label]
+            exist_feature.append(feature)
+            dataset[label] = exist_feature
+    return dataset
+```
+
+기존의 데이터는 디렉토리가 구분되어 있었지만 한국어 데이터는 a와 b를 통해서 test data와 train data가 구분되어 있다. 그래서 train이라는 변수를 통해서 train과 test data를 구분해주었다.
+
+### 3. test in main
+
+```python
+for label in testDataSet.keys():
+        feature = testDataSet[label]
+        for i in range(3):
+            scoreList = {}
+            for model_label in hmmModels.keys():
+                model = hmmModels[model_label]
+                score = model.score(feature[i])
+                #print(score)
+                scoreList[model_label] = score
+            predict = max(scoreList, key=scoreList.get)
+            print("Test on true label ", label, ": predict result label is ", predict)
+            if predict == label:
+                score_cnt+=1
+    print("Final recognition rate is %.2f"%(100.0*score_cnt/len(testDataSet.keys())), "%")
+```
+
+원래는 1개의 test data만 있던것과 달리 label당 3개의 data가 있기 때문에 for문을 통해서 3번의 반복을 실행한다.
+
+## 한국어 데이터셋 결과
+
+Test on true label  0 : predict result label is  6
+
+Test on true label  0 : predict result label is  6
+
+Test on true label  0 : predict result label is  6
+
+Test on true label  1 : predict result label is  1
+
+Test on true label  1 : predict result label is  1
+
+Test on true label  1 : predict result label is  6
+
+Test on true label  2 : predict result label is  2
+
+Test on true label  2 : predict result label is  2
+
+Test on true label  2 : predict result label is  6
+
+Test on true label  3 : predict result label is  3
+
+Test on true label  3 : predict result label is  3
+
+Test on true label  3 : predict result label is  3
+
+Test on true label  4 : predict result label is  4
+
+Test on true label  4 : predict result label is  4
+
+Test on true label  4 : predict result label is  4
+
+Test on true label  5 : predict result label is  5
+
+Test on true label  5 : predict result label is  9
+
+Test on true label  5 : predict result label is  5
+
+Test on true label  6 : predict result label is  7
+
+Test on true label  6 : predict result label is  6
+
+Test on true label  6 : predict result label is  6
+
+Test on true label  7 : predict result label is  7
+
+Test on true label  7 : predict result label is  7
+
+Test on true label  7 : predict result label is  6
+
+Test on true label  8 : predict result label is  8
+
+Test on true label  8 : predict result label is  8
+
+Test on true label  8 : predict result label is  8
+
+Test on true label  9 : predict result label is  5
+
+Test on true label  9 : predict result label is  9
+
+Test on true label  9 : predict result label is  9
+
+Final recognition rate is 70.00 %
+
+예측은 약 70퍼센트의 정확도를 가졌고 한번 맞은 숫자여도 다른 케이스에서는 틀리는 경우가 있다.
